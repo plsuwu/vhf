@@ -28,7 +28,7 @@ struct Args {
     ip: String,
 
     #[arg(short, long)]
-    wordlist: Option<String>,
+    wordlist: String,
 
     #[arg(short, long, default_value_t = 50)]
     concurrency: usize,
@@ -83,9 +83,7 @@ async fn main() -> Result<(), Error> {
     let arguments = Args::parse();
     let ip_arc = Arc::new(arguments.ip);
 
-    let wordlist_filepath = arguments
-        .wordlist
-        .expect("err reading filepath for wordlist");
+    let wordlist_filepath = arguments.wordlist;
     let wordlist_file = File::open(&wordlist_filepath)
         .with_context(|| format!("unable to open {}", wordlist_filepath))?;
     let reader = BufReader::new(wordlist_file);
