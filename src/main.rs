@@ -1,22 +1,20 @@
+use vhfuzz::progress;
+use vhfuzz::requester::requester;
+use vhfuzz::default_words::DEFAULT_WORDLIST;
+
 use anyhow::{Context, Error};
 use clap::Parser;
 use futures::future;
-use reqwest::{
-    self,
-    header::{HOST, USER_AGENT},
-    Client,
-};
+use reqwest::{self, Client};
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Write},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    io::{BufRead, BufReader},
+    sync::{atomic::AtomicUsize, Arc},
 };
 use tokio;
 use tokio::sync::Semaphore;
-use tokio::time::{interval, Duration};
+
+pub const IMPERSONATE: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,62 +26,27 @@ struct Args {
     ip: String,
 
     #[arg(short, long)]
-    wordlist: String,
+    wordlist: Option<String>,
 
-    #[arg(short, long, default_value_t = 50)]
-    concurrency: usize,
-}
+    #[arg(short, long, default_value=IMPERSONATE)]
+    agent: String,
 
-async fn print_progress(req_count: Arc<AtomicUsize>) {
-    let mut interval = interval(Duration::from_secs(3));
-    loop {
-        interval.tick().await;
-        let count = req_count.load(Ordering::SeqCst);
-        println!("\rmade [ {} ] requests..", count);
-        std::io::stdout().flush().unwrap();
-    }
-}
-
-async fn requester(
-    url: &str,
-    ip: &str,
-    subdomain: &str,
-    client: Client,
-    semaphore: Arc<Semaphore>,
-    request_count: Arc<AtomicUsize>,
-) -> Result<bool, reqwest::Error> {
-    let _permit = semaphore
-        .acquire()
-        .await
-        .expect("unable to acquire thread permit.");
-    request_count.fetch_add(1, Ordering::SeqCst);
-
-    let vhost: String = format!("{}.{}", subdomain, url);
-    let ip_as_url: String = format!("http://{}", ip);
-
-    let mut vhost_status = false;
-
-    let res = client
-        .get(&ip_as_url)
-        .header(HOST, &vhost)
-        .header(USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-        .send()
-        .await?;
-
-    if res.status().is_success() {
-        println!("[{}]: {}", res.status(), vhost);
-        vhost_status = true;
-    }
-
-    return Ok(vhost_status);
+    #[arg(short, long, default_value_t = 25)]
+    threads: usize,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let arguments = Args::parse();
     let ip_arc = Arc::new(arguments.ip);
+    let agent = arguments.agent;
+    let mut wordlist_filepath: String;
 
-    let wordlist_filepath = arguments.wordlist;
+    if arguments.wordlist.is_some() {
+        wordlist_filepath = DEFAULT_WORDLIST.to_string();
+    } else {
+        wordlist_filepath = arguments.wordlist.expect("can't set wordlist path to provided wordlist! (this shouldn't happen).");
+    }
     let wordlist_file = File::open(&wordlist_filepath)
         .with_context(|| format!("unable to open {}", wordlist_filepath))?;
     let reader = BufReader::new(wordlist_file);
@@ -93,12 +56,12 @@ async fn main() -> Result<(), Error> {
     let progress = {
         let request_count_clone = request_count.clone();
         tokio::spawn(async move {
-            print_progress(request_count_clone).await;
+            progress::print_progress(request_count_clone).await;
         })
     };
 
     let client = Client::new();
-    let semaphore = Arc::new(Semaphore::new(arguments.concurrency));
+    let semaphore = Arc::new(Semaphore::new(arguments.threads));
     let mut tasks = vec![];
 
     for line in reader.lines() {
@@ -108,6 +71,7 @@ async fn main() -> Result<(), Error> {
         }
 
         let client_clone = client.clone();
+        let agent_clone = agent.clone();
         let semaphore_clone = semaphore.clone();
         let url_clone = arguments.url.clone();
         let ip_clone = Arc::clone(&ip_arc);
@@ -121,6 +85,7 @@ async fn main() -> Result<(), Error> {
                 client_clone,
                 semaphore_clone,
                 request_count_clone,
+                &agent_clone,
             )
             .await;
         });
@@ -131,5 +96,5 @@ async fn main() -> Result<(), Error> {
     let _: Vec<_> = future::join_all(tasks).await.into_iter().collect();
     progress.abort();
 
-    Ok(())
+    return Ok(());
 }
