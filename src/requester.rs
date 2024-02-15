@@ -36,6 +36,7 @@ pub async fn requester(
         .send()
         .await?;
 
+    // TODO: this needs to be able to handle for a range of errors.
     if res.status().is_success() {
         println!("[{}]: {}", res.status(), vhost);
         vhost_status = true;
