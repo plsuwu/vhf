@@ -1,0 +1,7 @@
+services:
+  vhf-testing:
+    build:
+      context: ./testing-server/
+
+    ports:
+      - 80:80
