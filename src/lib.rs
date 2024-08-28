@@ -1,3 +1,5 @@
-pub mod progress;
+pub mod parsers;
+pub mod constants;
+pub mod fuzzer;
 pub mod requester;
-pub mod default_words;
+
