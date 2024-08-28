@@ -1,20 +1,23 @@
-use vhfuzz::progress;
-use vhfuzz::requester::requester;
-use vhfuzz::default_words::DEFAULT_WORDLIST;
-
-use anyhow::{Context, Error};
+use anyhow::Error;
 use clap::Parser;
-use futures::future;
-use reqwest::{self, Client};
+use reqwest::{Request, Response, StatusCode};
 use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    sync::{atomic::AtomicUsize, Arc},
+    collections::HashMap,
+    io::Write,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
-use tokio;
-use tokio::sync::Semaphore;
-
-pub const IMPERSONATE: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+use tokio::{
+    sync::{Semaphore, SemaphorePermit},
+    task,
+};
+use vhost_enumerator::{
+    fuzzer::Fuzzer,
+    parsers::{Agent, Url, Wordlist},
+    requester::Requester,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -25,76 +28,150 @@ struct Args {
     #[arg(short, long)]
     ip: String,
 
-    #[arg(short, long)]
-    wordlist: Option<String>,
+    #[arg(short, long, default_value_t=1.to_string())]
+    wordlist: String,
 
-    #[arg(short, long, default_value=IMPERSONATE)]
+    #[arg(short, long, default_value_t=0.to_string())]
     agent: String,
 
     #[arg(short, long, default_value_t = 25)]
     threads: usize,
+
+    #[arg(short, long, default_value_t = false)]
+    filter: bool,
+
+    #[arg(long, default_value_t = false)]
+    no_tls: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let arguments = Args::parse();
-    let ip_arc = Arc::new(arguments.ip);
-    let agent = arguments.agent;
-    let mut wordlist_filepath: String;
+    let args = Args::parse();
 
-    if arguments.wordlist.is_some() {
-        wordlist_filepath = DEFAULT_WORDLIST.to_string();
-    } else {
-        wordlist_filepath = arguments.wordlist.expect("can't set wordlist path to provided wordlist! (this shouldn't happen).");
-    }
-    let wordlist_file = File::open(&wordlist_filepath)
-        .with_context(|| format!("unable to open {}", wordlist_filepath))?;
-    let reader = BufReader::new(wordlist_file);
+    // parse wordlist via the index/path handler func
+    let user_agent = Agent::from(&args.agent)?;
+    let ip_url = Url::from(&args.ip, args.no_tls)?;
+    // let base_domain = args.url;
 
-    let request_count = Arc::new(AtomicUsize::new(0));
+    let wordlist: Arc<Vec<String>> = Wordlist::from(&args.wordlist).await?;
+    let threadpool = Arc::new(Semaphore::new(args.threads));
+    let results = Arc::new(Mutex::new(HashMap::new()));
 
-    let progress = {
-        let request_count_clone = request_count.clone();
-        tokio::spawn(async move {
-            progress::print_progress(request_count_clone).await;
-        })
-    };
+    // Fuzzer object is not necessary atm but provides nice encapsulation for the overall fuzz run
+    // let fuzzer = Fuzzer::new(target_ip, wordlist, threadpool);
 
-    let client = Client::new();
-    let semaphore = Arc::new(Semaphore::new(arguments.threads));
-    let mut tasks = vec![];
+    let mut req_handles = Vec::new();
 
-    for line in reader.lines() {
-        let subdomain = line?;
-        if subdomain.is_empty() {
-            continue;
-        }
+    // let mut print_handles = Vec::new();
 
-        let client_clone = client.clone();
-        let agent_clone = agent.clone();
-        let semaphore_clone = semaphore.clone();
-        let url_clone = arguments.url.clone();
-        let ip_clone = Arc::clone(&ip_arc);
-        let request_count_clone = request_count.clone();
+    let requests_total = Arc::new(AtomicUsize::new(wordlist.len()));
+    let req_count = Arc::new(AtomicUsize::new(0));
 
-        let task = tokio::spawn(async move {
-            let _ = requester(
-                &url_clone,
-                ip_clone.as_str(),
-                &subdomain,
-                client_clone,
-                semaphore_clone,
-                request_count_clone,
-                &agent_clone,
+    // let _progress = {
+    //     let req_count = req_count.clone();
+    //     tokio::spawn(async move {
+    //         Fuzzer::progress(req_count, requests_total).await;
+    //     });
+    // };
+
+    let filter_heuristic =
+        Fuzzer::heuristic(ip_url.clone(), args.url.clone(), user_agent.clone()).await;
+
+    for (i, word) in wordlist.iter().enumerate() {
+        let word = word.clone();
+        let filtered = filter_heuristic.clone();
+        let base_domain = args.url.clone();
+        let index = i.clone();
+        let req_count = req_count.clone();
+        let threadpool = Arc::clone(&threadpool);
+        let agent = user_agent.clone();
+        let url = ip_url.clone();
+        let res = results.clone();
+
+        let handle = task::spawn(async move {
+            // run requests
+            let permit = threadpool.acquire().await.unwrap();
+            proc_dbg(
+                word,
+                base_domain,
+                index,
+                url,
+                agent,
+                req_count,
+                permit,
+                res,
+                filtered,
             )
             .await;
         });
 
-        tasks.push(task);
+        req_handles.push(handle);
     }
 
-    let _: Vec<_> = future::join_all(tasks).await.into_iter().collect();
-    progress.abort();
+    for handle in req_handles {
+        handle.await?;
+    }
+    //
+    // println!();
+    //
+    println!("{:#?}", results.lock().unwrap());
 
     return Ok(());
+}
+
+async fn proc_dbg(
+    word: String,
+    domain: String,
+    index: usize,
+    url: String,
+    agent: String,
+    counter: Arc<AtomicUsize>,
+    permit: SemaphorePermit<'_>,
+    result: Arc<Mutex<HashMap<String, StatusCode>>>,
+    filtered: u64,
+) {
+    print!("\r\r\r");
+    std::io::stdout().lock().flush().unwrap();
+
+    // write!(lock, "").unwrap();
+    // lock.flush().unwrap();
+
+    counter.fetch_add(1, Ordering::SeqCst);
+    let curr = counter.load(Ordering::SeqCst);
+    // let dbug = "https://google.com".to_string();
+
+    let subdomain = format!("{}.{}", word, domain);
+    // let subdomain = format!("www.google.com");
+
+    let client = Requester::new(&subdomain, url, agent).await;
+    // println!("{:#?}", client);
+    let mut buffer = String::new();
+
+    let response = Requester::client(client).await;
+
+    match response {
+        Ok(r) => {
+            if r.status() == 200 {
+                if r.content_length() != Some(filtered) {
+                    result.lock().unwrap().insert(subdomain.clone(), r.status());
+                    buffer.push_str(&format!(
+                        "[+]  got status '{}' on '{}' ({:?} bytes)",
+                        r.status(),
+                        &subdomain,
+                        r.content_length()
+                    ));
+                } else {
+                    buffer.push_str(&format!("filtered response [{}] for '{}'", r.status(), &subdomain));
+                }
+            }
+        }
+        Err(r) => {
+            buffer.push_str(&format!("[!] {:#?} - {}\r", r, &subdomain));
+        }
+    }
+
+
+    let mut lock = std::io::stdout().lock();
+    write!(lock, "\r[{}] => {}\r", curr, buffer).unwrap();
+    lock.flush().unwrap();
 }
