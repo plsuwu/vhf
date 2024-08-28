@@ -1,7 +1,4 @@
-use rand::{
-    distributions::{self, Alphanumeric},
-    random, thread_rng, Rng,
-};
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::{
     char,
     io::Write,
@@ -55,7 +52,8 @@ impl Fuzzer {
     }
 
     pub async fn heuristic(target_ip: String, domain: String, agent: String) -> u64 {
-        let noise = format!("{}.{}",
+        let noise = format!(
+            "{}.{}",
             thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(32)
@@ -66,17 +64,18 @@ impl Fuzzer {
             domain
         );
 
-
         let client = Requester::new(&noise, target_ip, agent).await;
         // println!("{}", noise);
         // println!("{:#?}", client);
         // let mut buffer = String::new();
 
-        let response = Requester::client(client).await.unwrap().content_length().unwrap();
+        let response = Requester::client(client)
+            .await
+            .unwrap()
+            .content_length()
+            .unwrap();
         println!("heuristic content_length result: {:#?}", response);
         return response;
-
-
 
         //
         // return 1;

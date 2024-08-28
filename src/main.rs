@@ -1,6 +1,6 @@
 use anyhow::Error;
 use clap::Parser;
-use reqwest::{Request, Response, StatusCode};
+use reqwest::StatusCode;
 use std::{
     collections::HashMap,
     io::Write,
@@ -13,7 +13,7 @@ use tokio::{
     sync::{Semaphore, SemaphorePermit},
     task,
 };
-use vhost_enumerator::{
+use vhf::{
     fuzzer::Fuzzer,
     parsers::{Agent, Url, Wordlist},
     requester::Requester,

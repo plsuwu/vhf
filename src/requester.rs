@@ -1,8 +1,4 @@
-use anyhow::Error;
-use regex::Regex;
 use reqwest::{header::*, Client, Response};
-use std::sync::Arc;
-use tokio::sync::{Semaphore, SemaphorePermit};
 
 // An example given the IP `10.10.11.28`, which wants to resolve to the domain 'sea.htb',
 // might also run a different service on a subdomain at 'example.sea.htb'. By sending a

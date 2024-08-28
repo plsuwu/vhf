@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use dirs::data_dir;
 use lazy_static::lazy_static;
+use std::path::PathBuf;
 
 lazy_static! {
     pub static ref SECLIST_BASE_URL: &'static str = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS";
@@ -29,14 +28,14 @@ lazy_static! {
 // take either the index (0 through 3) and match the arg as an index to the array, or
 // take a raw string and use it as a raw arg
 pub fn index_arg(arg: &str, arr: Vec<&str>) -> String {
-     return match arg.parse::<usize>() {
+    return match arg.parse::<usize>() {
         Ok(num) => {
             if num < arr.len() {
                 arr[num].to_string()
             } else {
                 arg.to_string()
             }
-        },
-        Err(_) => arg.to_string()
-     };
+        }
+        Err(_) => arg.to_string(),
+    };
 }

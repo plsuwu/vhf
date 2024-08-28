@@ -108,9 +108,9 @@ impl Url {
         let url = match caps {
             Some(_) => {
                 if ip_arg.ends_with("/") {
-                        String::from(format!("{}", ip_arg))
-                    } else {
-                        String::from(format!("{}/", ip_arg))
+                    String::from(format!("{}", ip_arg))
+                } else {
+                    String::from(format!("{}/", ip_arg))
                 }
             }
             None => {
